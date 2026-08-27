@@ -2,6 +2,8 @@
 
 Public, mobile-first CEO operating dashboard for Tiger Brands Global.
 
+**Live:** https://tiger-brands-ceo-control.jacobfelipe1.chatgpt.site
+
 ## Features
 
 - Editable $5,000 revenue goal for August 31, 2026
