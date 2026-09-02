@@ -1,118 +1,287 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { buildAgentPrompt, initialTasks, priorityMeta, type Priority, type Task } from './tasks';
+import { useEffect, useMemo, useState } from 'react';
+import { brainSections, insights, missionTasks, type MissionTask } from './mission-data';
 
-type Goal = { target: number; current: number; deadline: string };
-type LogEntry = { id: string; createdAt: string; text: string };
-type Snapshot = { id: string; createdAt: string; goal: Goal; tasks: Task[]; note: string };
-type Store = { goal: Goal; tasks: Task[]; logs: LogEntry[]; snapshots: Snapshot[] };
-type View = 'board' | 'tree' | 'log' | 'history';
+type View = 'tasks' | 'insights' | 'brain';
+type TaskState = { completed: boolean; doneSteps: Record<number, boolean>; note: string };
+type SavedState = { tasks: Record<string, TaskState> };
 
-const KEY = 'tbg-ceo-mission-control-v1';
-const DEFAULT_GOAL: Goal = { target: 5000, current: 1298.88, deadline: '2026-08-31' };
-const priorities: Priority[] = ['P0', 'P1', 'P2', 'P3'];
-const blankTask = (): Task => ({ id: crypto.randomUUID(), title: '', priority: 'P1', owner: 'CEO', status: 'Open', dueDate: '2026-08-31', dependencies: '', nextAction: '', notes: '', completed: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-const money = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(value || 0);
+const STORAGE_KEY = 'tbg-ceo-mission-control-v2';
+const GITHUB_ROOT = 'https://github.com/harelos/ceo-mission-control';
+
+const priorityMeta = {
+  P0: { label: 'לעשות קודם', className: 'border-red-400/30 bg-red-400/10 text-red-200' },
+  P1: { label: 'ספרינט הכנסות', className: 'border-violet-400/30 bg-violet-400/10 text-violet-200' },
+  P2: { label: 'מערכת ומינוף', className: 'border-blue-400/30 bg-blue-400/10 text-blue-200' },
+} as const;
+
+const emptyTaskState = (): TaskState => ({ completed: false, doneSteps: {}, note: '' });
 
 export default function Home() {
-  const [goal, setGoal] = useState(DEFAULT_GOAL);
-  const [tasks, setTasks] = useState<Task[]>(initialTasks);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [view, setView] = useState<View>('board');
+  const [view, setView] = useState<View>('tasks');
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<'all' | 'open' | 'done'>('all');
-  const [editing, setEditing] = useState<Task | null>(null);
-  const [logText, setLogText] = useState('');
+  const [selectedTask, setSelectedTask] = useState<MissionTask | null>(null);
+  const [taskState, setTaskState] = useState<Record<string, TaskState>>({});
   const [hydrated, setHydrated] = useState(false);
-  const [dragged, setDragged] = useState<string | null>(null);
-  const importRef = useRef<HTMLInputElement>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
-    queueMicrotask(() => {
-      try {
-        const raw = localStorage.getItem(KEY);
-        if (raw) {
-          const saved = JSON.parse(raw) as Partial<Store>;
-          if (saved.goal) setGoal(saved.goal);
-          if (Array.isArray(saved.tasks)) setTasks(saved.tasks);
-          if (Array.isArray(saved.logs)) setLogs(saved.logs);
-          if (Array.isArray(saved.snapshots)) setSnapshots(saved.snapshots);
-        }
-      } catch { /* retain safe defaults */ }
-      setHydrated(true);
-    });
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as SavedState;
+        if (parsed.tasks) setTaskState(parsed.tasks);
+      }
+    } catch {
+      // Keep clean defaults if local data is malformed.
+    }
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (hydrated) localStorage.setItem(KEY, JSON.stringify({ goal, tasks, logs, snapshots } satisfies Store));
-  }, [goal, tasks, logs, snapshots, hydrated]);
+    if (!hydrated) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ tasks: taskState } satisfies SavedState));
+  }, [taskState, hydrated]);
 
-  const visible = useMemo(() => tasks.filter(task => {
-    const q = search.toLowerCase();
-    const matches = !q || [task.title, task.owner, task.nextAction, task.dependencies].join(' ').toLowerCase().includes(q);
-    return matches && (filter === 'all' || (filter === 'done' ? task.completed : !task.completed));
-  }), [tasks, search, filter]);
+  const filteredTasks = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return missionTasks;
+    return missionTasks.filter(task => [
+      task.id,
+      task.title,
+      task.status,
+      task.objective,
+      task.why,
+      ...task.steps,
+      ...(task.research || []),
+    ].join(' ').toLowerCase().includes(q));
+  }, [search]);
 
-  const progress = Math.min(100, Math.max(0, (goal.current / Math.max(1, goal.target)) * 100));
-  const remaining = Math.max(0, goal.target - goal.current);
-  const deadline = new Date(`${goal.deadline}T23:59:59`);
-  const daysLeft = Math.max(1, Math.ceil((deadline.getTime() - Date.now()) / 86400000));
-  const completed = tasks.filter(t => t.completed).length;
+  const filteredInsights = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return insights;
+    return insights.filter(item => `${item.id} ${item.title} ${item.detail}`.toLowerCase().includes(q));
+  }, [search]);
 
-  const patchTask = (id: string, patch: Partial<Task>) => setTasks(all => all.map(t => t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t));
-  const saveTask = () => {
-    if (!editing?.title.trim()) return;
-    setTasks(all => all.some(t => t.id === editing.id) ? all.map(t => t.id === editing.id ? { ...editing, updatedAt: new Date().toISOString() } : t) : [...all, editing]);
-    setEditing(null);
-  };
-  const saveSnapshot = () => {
-    const todayNotes = logs.filter(l => l.createdAt.slice(0, 10) === new Date().toISOString().slice(0, 10)).map(l => l.text).join('\n');
-    setSnapshots(all => [{ id: crypto.randomUUID(), createdAt: new Date().toISOString(), goal: { ...goal }, tasks: structuredClone(tasks), note: todayNotes }, ...all]);
-    setView('history');
-  };
-  const exportData = () => {
-    const blob = new Blob([JSON.stringify({ goal, tasks, logs, snapshots }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob); const a = document.createElement('a');
-    a.href = url; a.download = `ceo-mission-control-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url);
-  };
-  const importData = async (file?: File) => {
-    if (!file) return;
-    try { const data = JSON.parse(await file.text()) as Store; if (!data.goal || !Array.isArray(data.tasks)) throw new Error(); setGoal(data.goal); setTasks(data.tasks); setLogs(data.logs || []); setSnapshots(data.snapshots || []); }
-    catch { alert('This file is not a valid CEO Mission Control export.'); }
+  const completedCount = missionTasks.filter(task => taskState[task.id]?.completed).length;
+
+  const getState = (id: string) => taskState[id] || emptyTaskState();
+
+  const patchState = (id: string, patch: Partial<TaskState>) => {
+    setTaskState(all => ({ ...all, [id]: { ...getState(id), ...patch } }));
   };
 
-  return <main className="min-h-screen bg-[#08080c] text-white"><div className="mx-auto max-w-[1680px] px-4 py-5 sm:px-7 lg:px-9">
-    <header className="mb-5 flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-5"><div><p className="text-[11px] font-bold uppercase tracking-[.22em] text-violet-300">Tiger Brands Global · Active</p><h1 className="mt-1 text-2xl font-black tracking-tight sm:text-3xl">CEO Mission Control</h1></div><div className="flex flex-wrap gap-2 text-xs"><button onClick={() => setEditing(blankTask())} className="rounded-xl bg-violet-600 px-4 py-2.5 font-bold hover:bg-violet-500">+ Add task</button><button onClick={saveSnapshot} className="rounded-xl border border-white/15 bg-white/5 px-3 py-2.5 hover:bg-white/10">Save today snapshot</button><button onClick={exportData} className="rounded-xl border border-white/15 px-3 py-2.5 hover:bg-white/5">Export</button><button onClick={() => importRef.current?.click()} className="rounded-xl border border-white/15 px-3 py-2.5 hover:bg-white/5">Import</button><input ref={importRef} type="file" accept="application/json" className="hidden" onChange={e => importData(e.target.files?.[0])} /></div></header>
+  const toggleStep = (task: MissionTask, index: number) => {
+    const current = getState(task.id);
+    const doneSteps = { ...current.doneSteps, [index]: !current.doneSteps[index] };
+    patchState(task.id, { doneSteps });
+  };
 
-    <section className="grid gap-4 rounded-[26px] border border-violet-400/20 bg-[radial-gradient(circle_at_top_left,rgba(124,58,237,.32),transparent_42%),linear-gradient(135deg,#17121f,#0e0e13)] p-5 shadow-2xl shadow-violet-950/20 lg:grid-cols-[1.3fr_.7fr]"><div><p className="text-sm font-semibold text-violet-200">Revenue goal · by Aug 31, 2026</p><div className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-2"><label><span className="block text-[10px] uppercase tracking-widest text-zinc-500">Goal</span><span className="flex items-center text-4xl font-black sm:text-6xl"><span>$</span><input aria-label="Revenue goal" className="w-44 bg-transparent outline-none sm:w-56" type="number" value={goal.target} onChange={e => setGoal({ ...goal, target: Number(e.target.value) })} /></span></label><label className="mb-1"><span className="block text-[10px] uppercase tracking-widest text-zinc-500">Revenue now</span><span className="flex items-center text-xl font-bold text-violet-200"><span>$</span><input aria-label="Current revenue" className="w-32 rounded-lg border border-white/10 bg-black/25 px-2 py-1 outline-none focus:border-violet-400" type="number" step="0.01" value={goal.current} onChange={e => setGoal({ ...goal, current: Number(e.target.value) })} /></span></label></div><div className="mt-6 h-3 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-gradient-to-r from-violet-600 via-fuchsia-500 to-red-400 transition-all" style={{ width: `${progress}%` }} /></div><div className="mt-3 flex flex-wrap justify-between gap-2 text-sm"><span className="font-bold">{money(goal.current)} · {progress.toFixed(1)}%</span><span className="text-zinc-400">{money(remaining)} remaining</span></div></div><div className="grid grid-cols-2 gap-3 self-end"><Metric label="Required / day" value={money(remaining / daysLeft)} /><Metric label="Days left" value={String(daysLeft)} /><Metric label="Completed" value={`${completed}/${tasks.length}`} /><Metric label="P0 open" value={String(tasks.filter(t => t.priority === 'P0' && !t.completed).length)} /></div></section>
+  const copyAgentPrompt = async (task: MissionTask) => {
+    const prompt = buildAgentPrompt(task);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopied(task.id);
+      setTimeout(() => setCopied(null), 1400);
+    } catch {
+      window.prompt('העתק את ההוראות לסוכן:', prompt);
+    }
+  };
 
-    <section className="mt-4 rounded-2xl border border-emerald-400/15 bg-emerald-400/[.05] p-4 text-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-bold text-emerald-300">Chargeback protection decision · Chargeflow recommended</p><p className="mt-1 max-w-5xl text-zinc-400">Run a guarded Shopify pilot: Insights + Alerts first, manually audit the first 5 cases, and keep unrestricted auto-refunds / Prevent controls off. Chargeblast remains the fallback only if its written fee terms are lower and card-network onboarding is complete.</p></div><span className="rounded-full border border-emerald-400/25 px-3 py-1 text-xs text-emerald-300">P0 · approve pilot</span></div></section>
+  return (
+    <main dir="rtl" className="min-h-screen bg-[#07070b] text-white">
+      <div className="mx-auto max-w-[1540px] px-4 py-5 sm:px-7 lg:px-9">
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-5">
+          <div>
+            <p className="text-[11px] font-bold tracking-[.2em] text-violet-300">TIGER BRANDS GLOBAL</p>
+            <h1 className="mt-1 text-2xl font-black tracking-tight sm:text-3xl">חדר השליטה של המנכ״ל</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">משימות, תובנות ומוח העסק באותו מקום. המספרים נשמרים מהשיחה כדי שאפשר יהיה לתת הערות בלי לאבד הקשר.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <a href={GITHUB_ROOT} target="_blank" rel="noreferrer" className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold text-zinc-200 hover:bg-white/10">GitHub</a>
+            <a href={`${GITHUB_ROOT}/tree/main/business-brain`} target="_blank" rel="noreferrer" className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-bold hover:bg-violet-500">פתח את מוח העסק</a>
+          </div>
+        </header>
 
-    <nav className="mt-6 flex flex-wrap items-center gap-2 border-b border-white/10 pb-4">{(['board', 'tree', 'log', 'history'] as View[]).map(v => <button key={v} onClick={() => setView(v)} className={`rounded-xl px-4 py-2 text-sm font-semibold capitalize ${view === v ? 'bg-white text-black' : 'text-zinc-400 hover:bg-white/5 hover:text-white'}`}>{v === 'log' ? 'Daily CEO Log' : v}</button>)}<div className="ml-auto flex flex-wrap gap-2"><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search tasks…" className="min-w-44 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none focus:border-violet-400" /><select value={filter} onChange={e => setFilter(e.target.value as typeof filter)} className="rounded-xl border border-white/10 bg-[#15151b] px-3 py-2 text-sm"><option value="all">All tasks</option><option value="open">Open</option><option value="done">Completed</option></select></div></nav>
+        <section className="mt-5 grid gap-3 sm:grid-cols-3">
+          <Metric label="משימות שנכנסו עד עכשיו" value={String(missionTasks.length)} hint="נוסיף את השאר אחרי ההערות שלך" />
+          <Metric label="תובנות שסווגו" value={String(insights.length)} hint="לא הופכות אוטומטית למשימות" />
+          <Metric label="הושלמו" value={`${completedCount}/${missionTasks.length}`} hint="נשמר מקומית בדפדפן" />
+        </section>
 
-    {view === 'board' && <div className="mt-5 grid items-start gap-4 xl:grid-cols-4">{priorities.map(priority => <PriorityColumn key={priority} priority={priority} tasks={visible.filter(t => t.priority === priority)} onPatch={patchTask} onEdit={t => setEditing({ ...t })} onDelete={id => setTasks(all => all.filter(t => t.id !== id))} onDrag={setDragged} onDrop={() => { if (dragged) patchTask(dragged, { priority }); setDragged(null); }} />)}</div>}
-    {view === 'tree' && <div className="mt-5 rounded-2xl border border-white/10 bg-white/[.025] p-5"><p className="mb-5 text-sm text-zinc-400">TIGER BRANDS GLOBAL — ACTIVE / CEO MISSION CONTROL</p>{priorities.map(p => <details key={p} open className="mb-3 rounded-xl border border-white/10 bg-black/20 p-4"><summary className="cursor-pointer font-bold" style={{ color: priorityMeta[p].color }}>{p} · {priorityMeta[p].title} <span className="text-zinc-600">({visible.filter(t => t.priority === p).length})</span></summary><div className="mt-3 border-l border-white/10 pl-4">{visible.filter(t => t.priority === p).map(t => <button key={t.id} onClick={() => setEditing({ ...t })} className={`block w-full py-2 text-left text-sm hover:text-violet-300 ${t.completed ? 'text-zinc-600 line-through' : 'text-zinc-300'}`}>├─ {t.title} <span className="text-zinc-600">· {t.owner}</span></button>)}</div></details>)}</div>}
-    {view === 'log' && <section className="mt-5 grid gap-4 lg:grid-cols-[.9fr_1.1fr]"><div className="rounded-2xl border border-white/10 bg-white/[.025] p-5"><h2 className="text-lg font-bold">Today’s CEO log</h2><p className="mt-1 text-sm text-zinc-500">Decisions, blockers, revenue notes, and agent outcomes.</p><textarea value={logText} onChange={e => setLogText(e.target.value)} rows={9} placeholder="What changed today?" className="mt-4 w-full rounded-xl border border-white/10 bg-black/30 p-4 text-sm outline-none focus:border-violet-400" /><button onClick={() => { if (logText.trim()) { setLogs(all => [{ id: crypto.randomUUID(), createdAt: new Date().toISOString(), text: logText.trim() }, ...all]); setLogText(''); } }} className="mt-3 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-bold">Save log entry</button></div><div className="space-y-3">{logs.length ? logs.map(l => <article key={l.id} className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><time className="text-xs text-violet-300">{new Date(l.createdAt).toLocaleString()}</time><p className="mt-2 whitespace-pre-wrap text-sm text-zinc-300">{l.text}</p></article>) : <Empty text="No log entries yet." />}</div></section>}
-    {view === 'history' && <section className="mt-5 space-y-3">{snapshots.length ? snapshots.map(s => <details key={s.id} className="rounded-2xl border border-white/10 bg-white/[.025] p-5"><summary className="cursor-pointer"><span className="font-bold">{new Date(s.createdAt).toLocaleString()}</span><span className="ml-3 text-sm text-zinc-500">{money(s.goal.current)} · {s.tasks.filter(t => t.completed).length}/{s.tasks.length} complete</span></summary><div className="mt-4 grid gap-4 text-sm sm:grid-cols-3"><Metric label="Revenue" value={money(s.goal.current)} /><Metric label="Remaining" value={money(Math.max(0, s.goal.target - s.goal.current))} /><Metric label="P0 open" value={String(s.tasks.filter(t => t.priority === 'P0' && !t.completed).length)} /></div>{s.note && <p className="mt-4 whitespace-pre-wrap rounded-xl bg-black/25 p-4 text-sm text-zinc-400">{s.note}</p>}<button onClick={() => { setGoal(s.goal); setTasks(structuredClone(s.tasks)); }} className="mt-4 text-xs font-bold text-violet-300 hover:text-white">Restore this snapshot</button></details>) : <Empty text="No snapshots yet. Use “Save today snapshot” at the end of each workday." />}</section>}
-    <footer className="mt-10 border-t border-white/10 py-5 text-xs text-zinc-600">Data stays in this browser via localStorage. Use Export / Import for backup and transfer. No Shopify, GitHub, or payment secrets are stored.</footer>
-  </div>{editing && <TaskModal task={editing} setTask={setEditing} onSave={saveTask} onClose={() => setEditing(null)} />}</main>;
+        <section className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/[.06] p-4 text-sm leading-6 text-amber-100">
+          <strong>הערת פרטיות:</strong> המאגר הזה ציבורי ב־GitHub כרגע. בניתי את מוח העסק בלי פרטי לקוחות, סיסמאות, אסימונים או פרטי תשלום. חומר רגיש לא נכנס למאגר הציבורי.
+        </section>
+
+        <nav className="mt-6 flex flex-wrap items-center gap-2 border-b border-white/10 pb-4">
+          <Tab active={view === 'tasks'} onClick={() => setView('tasks')}>משימות</Tab>
+          <Tab active={view === 'insights'} onClick={() => setView('insights')}>תובנות</Tab>
+          <Tab active={view === 'brain'} onClick={() => setView('brain')}>מוח העסק</Tab>
+          <div className="mr-auto w-full sm:w-auto">
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="חיפוש…" className="w-full min-w-56 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm outline-none placeholder:text-zinc-600 focus:border-violet-400 sm:w-72" />
+          </div>
+        </nav>
+
+        {view === 'tasks' && (
+          <section className="mt-5 grid gap-4 lg:grid-cols-2">
+            {filteredTasks.map(task => {
+              const state = getState(task.id);
+              const done = Object.values(state.doneSteps).filter(Boolean).length;
+              return (
+                <article key={task.id} className={`group rounded-[24px] border p-5 transition ${state.completed ? 'border-emerald-400/20 bg-emerald-400/[.04]' : 'border-white/10 bg-white/[.025] hover:border-violet-400/25 hover:bg-white/[.04]'}`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex min-w-0 gap-3">
+                      <span className="flex h-11 min-w-11 items-center justify-center rounded-xl bg-white/10 text-lg font-black text-violet-200">{task.id}</span>
+                      <div className="min-w-0">
+                        <h2 className={`text-lg font-black leading-6 ${state.completed ? 'text-zinc-500 line-through' : 'text-white'}`}>{task.title}</h2>
+                        <p className="mt-1 text-xs text-zinc-500">{task.status}</p>
+                      </div>
+                    </div>
+                    <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-bold ${priorityMeta[task.priority].className}`}>{task.priority} · {priorityMeta[task.priority].label}</span>
+                  </div>
+                  <p className="mt-4 text-sm leading-6 text-zinc-300">{task.objective}</p>
+                  <div className="mt-4 flex items-center justify-between gap-3 text-xs text-zinc-500">
+                    <span>{done}/{task.steps.length} תתי־משימות</span>
+                    <button onClick={() => setSelectedTask(task)} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 font-bold text-violet-200 hover:bg-violet-500/10">פתח משימה ←</button>
+                  </div>
+                </article>
+              );
+            })}
+          </section>
+        )}
+
+        {view === 'insights' && (
+          <section className="mt-5 space-y-3">
+            <div className="mb-4 rounded-2xl border border-violet-400/15 bg-violet-400/[.05] p-4 text-sm leading-6 text-zinc-300">תובנה היא משהו שצריך לזכור ולהשתמש בו בהחלטות, אבל אין סיבה להפוך אותה לכרטיס משימה רק כדי לסמן וי.</div>
+            {filteredInsights.map(item => (
+              <article key={item.id} className="grid gap-3 rounded-2xl border border-white/10 bg-white/[.025] p-5 sm:grid-cols-[64px_1fr]">
+                <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/10 text-lg font-black text-zinc-300">{item.id}</span>
+                <div><h2 className="font-black text-white">{item.title}</h2><p className="mt-2 text-sm leading-6 text-zinc-400">{item.detail}</p></div>
+              </article>
+            ))}
+          </section>
+        )}
+
+        {view === 'brain' && (
+          <section className="mt-5">
+            <div className="rounded-[24px] border border-violet-400/20 bg-[radial-gradient(circle_at_top_right,rgba(124,58,237,.22),transparent_42%),#0d0d13] p-5 sm:p-6">
+              <p className="text-xs font-bold text-violet-300">מוח העסק · גרסה 1</p>
+              <h2 className="mt-1 text-2xl font-black">מקור אמת אחד לאדם ולסוכן</h2>
+              <p className="mt-3 max-w-4xl text-sm leading-6 text-zinc-400">אותו מבנה קיים גם בממשק וגם כתיקיות וקבצים ב־GitHub. סוכן שמתחבר דרך GitHub, ממשק תכנות או שרת כלים מתחיל בקובץ ההוראות, קורא את האמת העסקית ואז נכנס לתחום הרלוונטי.</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <a href={`${GITHUB_ROOT}/blob/main/business-brain/AGENT_INSTRUCTIONS.md`} target="_blank" rel="noreferrer" className="rounded-xl bg-white px-4 py-2 text-sm font-black text-black">הוראות לסוכן</a>
+                <a href={`${GITHUB_ROOT}/blob/main/business-brain/MANIFEST.json`} target="_blank" rel="noreferrer" className="rounded-xl border border-white/15 px-4 py-2 text-sm font-bold text-zinc-200">מפתח קריא למכונה</a>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {brainSections.map(section => (
+                <a key={section.id} href={`${GITHUB_ROOT}/tree/main/${section.path}`} target="_blank" rel="noreferrer" className="rounded-2xl border border-white/10 bg-white/[.025] p-5 transition hover:border-violet-400/25 hover:bg-white/[.045]">
+                  <div className="flex items-center gap-3"><span className="rounded-lg bg-violet-500/15 px-2.5 py-1 text-xs font-black text-violet-200">{section.id}</span><h3 className="font-black">{section.title}</h3></div>
+                  <p className="mt-3 text-sm leading-6 text-zinc-400">{section.purpose}</p>
+                  <p className="mt-3 border-r-2 border-violet-400/30 pr-3 text-xs leading-5 text-zinc-500">כלל לסוכן: {section.agentRule}</p>
+                  <code dir="ltr" className="mt-4 block overflow-hidden text-ellipsis whitespace-nowrap rounded-lg bg-black/30 px-3 py-2 text-[11px] text-zinc-500">{section.path}</code>
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <footer className="mt-10 border-t border-white/10 py-5 text-xs leading-5 text-zinc-600">גרסה זו שומרת התקדמות והערות משימה בדפדפן. מקור הידע המשותף לסוכנים נמצא בתיקיית <span dir="ltr">business-brain/</span> ב־GitHub.</footer>
+      </div>
+
+      {selectedTask && (
+        <TaskPanel
+          task={selectedTask}
+          state={getState(selectedTask.id)}
+          onClose={() => setSelectedTask(null)}
+          onToggleStep={index => toggleStep(selectedTask, index)}
+          onNote={note => patchState(selectedTask.id, { note })}
+          onComplete={completed => patchState(selectedTask.id, { completed })}
+          onCopy={() => copyAgentPrompt(selectedTask)}
+          copied={copied === selectedTask.id}
+        />
+      )}
+    </main>
+  );
 }
 
-function Metric({ label, value }: { label: string; value: string }) { return <div className="rounded-2xl border border-white/10 bg-black/25 p-4"><p className="text-[11px] uppercase tracking-wider text-zinc-500">{label}</p><p className="mt-1 text-2xl font-black">{value}</p></div>; }
-function Empty({ text }: { text: string }) { return <div className="rounded-2xl border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">{text}</div>; }
+function Tab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return <button onClick={onClick} className={`rounded-xl px-4 py-2.5 text-sm font-bold transition ${active ? 'bg-white text-black' : 'text-zinc-400 hover:bg-white/5 hover:text-white'}`}>{children}</button>;
+}
 
-function PriorityColumn({ priority, tasks, onPatch, onEdit, onDelete, onDrag, onDrop }: { priority: Priority; tasks: Task[]; onPatch: (id: string, patch: Partial<Task>) => void; onEdit: (task: Task) => void; onDelete: (id: string) => void; onDrag: (id: string) => void; onDrop: () => void }) {
-  const meta = priorityMeta[priority];
-  return <section onDragOver={e => e.preventDefault()} onDrop={onDrop} className="min-h-40 rounded-2xl border border-white/10 bg-white/[.02] p-3"><div className="mb-3 flex items-center justify-between px-1"><div><p className="text-sm font-black" style={{ color: meta.color }}>{priority} · {meta.title}</p><p className="mt-0.5 text-[11px] text-zinc-600">{meta.subtitle}</p></div><span className="rounded-full bg-white/5 px-2 py-1 text-xs text-zinc-400">{tasks.length}</span></div><div className="space-y-3">{tasks.map(task => <TaskCard key={task.id} task={task} onPatch={onPatch} onEdit={onEdit} onDelete={onDelete} onDrag={onDrag} />)}</div></section>;
+function Metric({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><p className="text-xs font-bold text-zinc-500">{label}</p><p className="mt-1 text-2xl font-black">{value}</p><p className="mt-1 text-xs text-zinc-600">{hint}</p></div>;
 }
-function TaskCard({ task, onPatch, onEdit, onDelete, onDrag }: { task: Task; onPatch: (id: string, patch: Partial<Task>) => void; onEdit: (task: Task) => void; onDelete: (id: string) => void; onDrag: (id: string) => void }) {
-  return <article draggable onDragStart={() => onDrag(task.id)} className={`rounded-xl border bg-[#141419] p-3.5 shadow-lg shadow-black/10 transition hover:border-violet-400/35 ${task.completed ? 'border-emerald-400/15 opacity-60' : 'border-white/10'}`}><div className="flex gap-3"><input aria-label={`Complete ${task.title}`} type="checkbox" checked={task.completed} onChange={e => onPatch(task.id, { completed: e.target.checked, status: e.target.checked ? 'Completed' : 'Open' })} className="mt-1 h-5 w-5 accent-violet-500" /><div className="min-w-0 flex-1"><p className="text-[10px] font-bold uppercase tracking-wider text-zinc-600">Task {task.id.slice(0, 8)}</p><h3 className={`mt-1 text-sm font-bold leading-snug ${task.completed ? 'line-through' : ''}`}>{task.title}</h3><p className="mt-2 truncate text-[11px] text-zinc-500">{task.owner}</p></div></div><div className="mt-3 flex items-center gap-2"><select aria-label="Move priority" value={task.priority} onChange={e => onPatch(task.id, { priority: e.target.value as Priority })} className="rounded-lg border border-white/10 bg-[#1b1b22] px-2 py-1 text-[11px]">{priorities.map(p => <option key={p}>{p}</option>)}</select><span className="rounded-lg bg-white/5 px-2 py-1 text-[10px] text-zinc-500">{task.status}</span><span className="ml-auto text-[10px] text-zinc-600">{task.dueDate}</span></div><details className="mt-3 border-t border-white/10 pt-3"><summary className="cursor-pointer text-xs font-bold text-violet-300">Task brief & Agent Prompt</summary><dl className="mt-3 space-y-2 text-xs"><Detail label="Next action" value={task.nextAction} /><Detail label="Dependencies" value={task.dependencies} />{task.notes && <Detail label="Notes" value={task.notes} />}</dl><div className="mt-3 rounded-lg bg-black/35 p-3"><p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Agent prompt</p><p className="max-h-28 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-400">{buildAgentPrompt(task)}</p></div><div className="mt-3 flex gap-3 text-[11px] font-bold"><button onClick={() => navigator.clipboard.writeText(buildAgentPrompt(task))} className="text-violet-300 hover:text-white">Copy prompt</button><button onClick={() => onEdit(task)} className="text-zinc-400 hover:text-white">Edit</button><button onClick={() => confirm(`Delete “${task.title}”?`) && onDelete(task.id)} className="ml-auto text-red-400 hover:text-red-300">Delete</button></div></details></article>;
+
+function TaskPanel({ task, state, onClose, onToggleStep, onNote, onComplete, onCopy, copied }: {
+  task: MissionTask;
+  state: TaskState;
+  onClose: () => void;
+  onToggleStep: (index: number) => void;
+  onNote: (note: string) => void;
+  onComplete: (value: boolean) => void;
+  onCopy: () => void;
+  copied: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <aside dir="rtl" className="h-full w-full overflow-y-auto border-r border-white/10 bg-[#0b0b10] p-5 shadow-2xl sm:max-w-3xl sm:p-7">
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-5">
+          <div className="flex gap-3"><span className="flex h-12 min-w-12 items-center justify-center rounded-xl bg-violet-500/15 text-xl font-black text-violet-200">{task.id}</span><div><h2 className="text-xl font-black sm:text-2xl">{task.title}</h2><p className="mt-1 text-sm text-zinc-500">{task.status}</p></div></div>
+          <button onClick={onClose} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-400 hover:bg-white/5 hover:text-white">סגור</button>
+        </div>
+
+        <InfoBlock title="המטרה"><p>{task.objective}</p></InfoBlock>
+        <InfoBlock title="למה זה חשוב"><p>{task.why}</p></InfoBlock>
+
+        <section className="mt-6">
+          <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-black text-white">איך משיגים את המשימה</h3><span className="text-xs text-zinc-600">{Object.values(state.doneSteps).filter(Boolean).length}/{task.steps.length}</span></div>
+          <div className="mt-3 space-y-2">
+            {task.steps.map((step, index) => (
+              <label key={index} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3.5 text-sm leading-6 transition ${state.doneSteps[index] ? 'border-emerald-400/15 bg-emerald-400/[.04] text-zinc-500' : 'border-white/10 bg-white/[.025] text-zinc-300 hover:border-violet-400/20'}`}>
+                <input type="checkbox" checked={!!state.doneSteps[index]} onChange={() => onToggleStep(index)} className="mt-1 h-4 w-4 accent-violet-500" />
+                <span className={state.doneSteps[index] ? 'line-through' : ''}>{step}</span>
+              </label>
+            ))}
+          </div>
+        </section>
+
+        {task.research && task.research.length > 0 && (
+          <InfoBlock title="המחקר שנכנס למשימה">
+            <ul className="space-y-2">{task.research.map((item, i) => <li key={i} className="rounded-lg bg-black/20 px-3 py-2">{item}</li>)}</ul>
+          </InfoBlock>
+        )}
+
+        <InfoBlock title="איך נדע שסיימנו">
+          <ul className="space-y-2">{task.success.map((item, i) => <li key={i}>• {item}</li>)}</ul>
+        </InfoBlock>
+
+        {task.links && task.links.length > 0 && (
+          <InfoBlock title="קישורים">
+            <div className="flex flex-wrap gap-2">{task.links.map(link => <a key={link.href} href={link.href} target="_blank" rel="noreferrer" className="rounded-xl border border-violet-400/20 bg-violet-400/[.06] px-3 py-2 text-sm font-bold text-violet-200 hover:bg-violet-400/10">{link.label}</a>)}</div>
+          </InfoBlock>
+        )}
+
+        <section className="mt-6 rounded-2xl border border-white/10 bg-white/[.025] p-4">
+          <label className="text-sm font-black">הערות שלי</label>
+          <textarea value={state.note} onChange={e => onNote(e.target.value)} rows={5} placeholder="מה גיליתי, מה חסר, למה לחזור…" className="mt-3 w-full rounded-xl border border-white/10 bg-black/25 p-3 text-sm leading-6 outline-none placeholder:text-zinc-700 focus:border-violet-400" />
+        </section>
+
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-5">
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-bold text-zinc-300"><input type="checkbox" checked={state.completed} onChange={e => onComplete(e.target.checked)} className="h-4 w-4 accent-emerald-500" /> המשימה הושלמה</label>
+          <button onClick={onCopy} className="rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-black hover:bg-violet-500">{copied ? 'הועתק ✓' : 'העתק הוראות לסוכן'}</button>
+        </div>
+      </aside>
+    </div>
+  );
 }
-function Detail({ label, value }: { label: string; value: string }) { return <div><dt className="font-bold text-zinc-500">{label}</dt><dd className="mt-0.5 leading-relaxed text-zinc-300">{value || 'None'}</dd></div>; }
-function TaskModal({ task, setTask, onSave, onClose }: { task: Task; setTask: (task: Task) => void; onSave: () => void; onClose: () => void }) {
-  const field = (key: keyof Task, value: string) => setTask({ ...task, [key]: value });
-  return <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="max-h-[92vh] w-full max-w-2xl overflow-auto rounded-2xl border border-white/15 bg-[#121218] p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-xl font-black">Edit task</h2><button onClick={onClose} className="text-2xl text-zinc-500">×</button></div><div className="mt-5 grid gap-4 sm:grid-cols-2"><Field label="Title" wide><input value={task.title} onChange={e => field('title', e.target.value)} className="input" autoFocus /></Field><Field label="Priority"><select value={task.priority} onChange={e => field('priority', e.target.value)} className="input">{priorities.map(p => <option key={p} value={p}>{p} · {priorityMeta[p].title}</option>)}</select></Field><Field label="Status"><input value={task.status} onChange={e => field('status', e.target.value)} className="input" /></Field><Field label="Owner / Agent"><input value={task.owner} onChange={e => field('owner', e.target.value)} className="input" /></Field><Field label="Due date"><input type="date" value={task.dueDate} onChange={e => field('dueDate', e.target.value)} className="input" /></Field><Field label="Dependencies" wide><textarea value={task.dependencies} onChange={e => field('dependencies', e.target.value)} className="input min-h-20" /></Field><Field label="Next action" wide><textarea value={task.nextAction} onChange={e => field('nextAction', e.target.value)} className="input min-h-20" /></Field><Field label="Notes" wide><textarea value={task.notes} onChange={e => field('notes', e.target.value)} className="input min-h-20" /></Field></div><div className="mt-5 flex justify-end gap-2"><button onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-zinc-400">Cancel</button><button onClick={onSave} className="rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-bold">Save task</button></div></div></div>;
+
+function InfoBlock({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section className="mt-6 rounded-2xl border border-white/10 bg-white/[.025] p-4 text-sm leading-6 text-zinc-300"><h3 className="mb-2 text-sm font-black text-white">{title}</h3>{children}</section>;
 }
-function Field({ label, wide, children }: { label: string; wide?: boolean; children: React.ReactNode }) { return <label className={wide ? 'sm:col-span-2' : ''}><span className="mb-1.5 block text-xs font-bold text-zinc-400">{label}</span>{children}</label>; }
+
+function buildAgentPrompt(task: MissionTask) {
+  return `אתה הסוכן שאחראי על משימה ${task.id}: ${task.title}.\n\nמטרה:\n${task.objective}\n\nלמה זה חשוב:\n${task.why}\n\nשלבי ביצוע:\n${task.steps.map((step, index) => `${index + 1}. ${step}`).join('\n')}\n\nמדדי הצלחה:\n${task.success.map(item => `- ${item}`).join('\n')}\n\nלפני העבודה קרא את business-brain/AGENT_INSTRUCTIONS.md ואת business-brain/01-current-truth/README.md. הפרד בין עובדות, השערות, חסמים והמלצות. אל תבצע שינוי חי בחנות, בפרסום, בתקציב, בספקים או בשליחת הודעות ללא אישור מפורש.`;
+}
