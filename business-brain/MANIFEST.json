@@ -1,0 +1,30 @@
+{
+  "name": "Tiger Brands Global Business Brain",
+  "version": "2026-09-02",
+  "start_here": [
+    "business-brain/AGENT_INSTRUCTIONS.md",
+    "business-brain/00-system/README.md",
+    "business-brain/01-current-truth/README.md"
+  ],
+  "sections": {
+    "00": "business-brain/00-system/",
+    "01": "business-brain/01-current-truth/",
+    "02": "business-brain/02-offers-pricing/",
+    "03": "business-brain/03-copy-messaging/",
+    "04": "business-brain/04-email-retention/",
+    "05": "business-brain/05-ads-creative/",
+    "06": "business-brain/06-pages-funnels/",
+    "07": "business-brain/07-customers-objections/",
+    "08": "business-brain/08-external-wisdom/",
+    "09": "business-brain/09-experiments-results/",
+    "10": "business-brain/10-strategic-decisions/",
+    "98": "business-brain/98-inbox/",
+    "99": "business-brain/99-archive/"
+  },
+  "rules": {
+    "current_truth_wins_over_archive": true,
+    "inbox_is_not_source_of_truth": true,
+    "secrets_allowed": false,
+    "customer_pii_allowed": false
+  }
+}
