@@ -21,10 +21,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.13.0
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Show build output
+        run: find . -maxdepth 3 -type f | sort | tail -120
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
