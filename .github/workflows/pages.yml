@@ -25,9 +25,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Show build output
-        run: find . -maxdepth 3 -type f | sort | tail -120
+      - name: Verify static export
+        run: |
+          test -f out/index.html
+          find out -maxdepth 2 -type f | sort | head -80
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./out
