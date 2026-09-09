@@ -10,6 +10,23 @@
 - הוראות לסוכן: https://github.com/harelos/ceo-mission-control/blob/main/business-brain/AGENT_INSTRUCTIONS.md
 - מפתח קריא למכונה: https://github.com/harelos/ceo-mission-control/blob/main/business-brain/MANIFEST.json
 
+## CEO × Agent Company OS — 9 Sep 2026
+
+A new operating-memory package captures the CEO/agent-company discussion about moving from “founder + smart assistants” to outcome-owning departments that can keep working without the CEO supplying every next instruction.
+
+Start here:
+
+- Visual index: `docs/ceo-agent-os.html`
+- Master operating model: `business-brain/10-strategic-decisions/agent-company-os/CEO_AGENT_COMPANY_OS.md`
+- Conversation memory: `business-brain/10-strategic-decisions/agent-company-os/CONVERSATION_SUMMARY_2026-09-09.md`
+- SEO / Organic Growth policy: `business-brain/10-strategic-decisions/agent-company-os/SEO_ORGANIC_GROWTH_POLICY_V1.md`
+- Meta Manager autonomy policy: `business-brain/05-ads-creative/2026-09-09-meta-manager-operating-policy-v1.md`
+- Foundry day-one implementation brief: `business-brain/10-strategic-decisions/agent-company-os/foundry-day-one-implementation-brief.md`
+
+Core rule:
+
+> **Do not delegate isolated decisions. Delegate the system that repeatedly makes those decisions inside a safe policy.**
+
 ## מה נכנס בגרסה הנוכחית
 
 ### משימות שהוגדרו מהשיחה של 2 בספטמבר 2026
